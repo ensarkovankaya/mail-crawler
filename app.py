@@ -1,6 +1,9 @@
 import requests
 from bs4 import BeautifulSoup
 import logging
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+import os
 
 logging.basicConfig(level='INFO')
 
@@ -79,3 +82,19 @@ def google_search(city, keyword, page_number):
             'link_count': 0,
             'status_code': response.status_code
         }
+
+
+def download_site(site):
+    """
+    Downloads given site.
+    :param str site: Web site url
+    :return: Html String
+    """
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--window-size=1920x1080")
+
+    chrome_driver = os.path.abspath('chromedriver')
+    driver = webdriver.Chrome(chrome_options=chrome_options, executable_path=chrome_driver)
+    driver.get(site)
+    return driver.page_source
