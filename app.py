@@ -4,6 +4,7 @@ import requests
 from bs4 import BeautifulSoup
 import logging
 from selenium import webdriver
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.chrome.options import Options
 import os
 import re
@@ -121,18 +122,29 @@ def download_site(site):
     :return: Html String
     :rtype Dict[str, str]
     """
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--window-size=1920x1080")
 
-    chrome_driver = os.path.abspath('chromedriver')
-    driver = webdriver.Chrome(chrome_options=chrome_options, executable_path=chrome_driver)
-    driver.get(site)
     data = {
         'site': site,
-        'html': driver.page_source
+        'html': None,
+        'successful': False
     }
-    driver.close()
+
+    try:
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--window-size=1920x1080")
+
+        chrome_driver = os.path.abspath('chromedriver')
+        driver = webdriver.Chrome(chrome_options=chrome_options, executable_path=chrome_driver)
+        driver.get(site)
+        data['html'] = driver.page_source
+        data['successful'] = True
+        driver.close()
+    except TimeoutException:
+        pass
+    except:
+        raise
+
     return data
 
 
