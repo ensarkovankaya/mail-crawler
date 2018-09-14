@@ -1,3 +1,5 @@
+from typing import List
+
 import requests
 from bs4 import BeautifulSoup
 import logging
@@ -8,7 +10,18 @@ import re
 from urllib.parse import urlparse
 from multiprocessing.pool import ThreadPool
 
-logging.basicConfig(level='INFO')
+logging.basicConfig(level='DEBUG')
+
+logger = logging.getLogger('app')
+
+
+def set_log_level(level):
+    """
+    Changes log level
+    :param str level:
+    :return:
+    """
+    logger.setLevel(level)
 
 
 def parse_html(html):
@@ -20,6 +33,42 @@ def parse_html(html):
     return BeautifulSoup(html, 'html.parser')
 
 
+class SearchResult:
+
+    def __init__(self, city, keyword, search_term, page, links, status_code):
+        self.city = city
+        self.keyword = keyword
+        self.search_term = search_term
+        self.page = page
+        self.status_code = status_code
+        self.links = list(set(links))
+        self.count = len(self.links)
+
+    def is_valid(self):
+        return self.status_code == 200
+
+    def is_link_exists(self, link):
+        """
+        Checks is link exists itself
+        :param str link: Page link
+        :rtype: bool
+        """
+        return link in self.links
+
+    def remove_link(self, link):
+        """
+        Remove given link from itself if exists
+        :param str link: Page link
+        """
+
+        if link in self.links:
+            self.links.remove(link)
+            self.count = len(self.links)
+            logger.debug(f"Link removed: {link}")
+        else:
+            logger.warning(f"Link not exists: {link}")
+
+
 def google_search(city, keyword, page_number):
     """
     Search given keyword in google and returns result page links
@@ -27,19 +76,10 @@ def google_search(city, keyword, page_number):
     :param str city: Search city
     :param str keyword: Search Keyword
     :param int page_number: Google search page number
-    :return: {
-            'city': city,
-            'keyword': keyword,
-            'search_term': search_term,
-            'page': page_number,
-            'verified_links': [] Result links as array,
-            'link_count': 0,
-            'status_code': 200 # Status code
-            'raw_links': []
-    }
+    :rtype: SearchResult
     """
 
-    logging.debug("Searching from google with Key: {} City: {} and Page: {}".format(keyword, city, page_number))
+    logger.debug("Searching from google with Key: {} City: {} and Page: {}".format(keyword, city, page_number))
 
     search_term = "{0} in {1}".format(keyword, city)
     url = \
@@ -48,6 +88,7 @@ def google_search(city, keyword, page_number):
             page=page_number
         )
     response = requests.get(url)
+    logger.debug(f"Search result page successfully for search '{search_term}' in page {page_number}.")
 
     if response.status_code == 200:
         # If page response successful
@@ -58,33 +99,19 @@ def google_search(city, keyword, page_number):
         for i in soup.find_all('h3', {"class": 'r'}):
             raw_links.append(i.a['href'])
 
-        verified_links = []
+        links = []
 
         for link in raw_links:
-            verified_links.append(clean_site_url(link.replace('/url?q=', '')))
+            links.append(clean_site_url(link.replace('/url?q=', '')))
 
-        logging.info("Links extracted for search {}.".format(search_term))
+        logger.info("Links extracted for search {}.".format(search_term))
 
-        return {
-            'city': city,
-            'keyword': keyword,
-            'search_term': search_term,
-            'page': page_number,
-            'verified_links': verified_links,
-            'link_count': len(verified_links),
-            'status_code': response.status_code
-        }
+        return SearchResult(city=city, keyword=keyword, search_term=search_term, page=page_number,
+                            links=links, status_code=response.status_code)
     else:
-        logging.error("Links can not extracted for search {}.".format(search_term))
-        return {
-            'city': city,
-            'keyword': keyword,
-            'search_term': search_term,
-            'page': page_number,
-            'verified_links': [],
-            'link_count': 0,
-            'status_code': response.status_code
-        }
+        logger.error("Links can not extracted for search {}.".format(search_term))
+        return SearchResult(city=city, keyword=keyword, search_term=search_term, page=page_number,
+                            links=[], status_code=response.status_code)
 
 
 def download_site(site):
@@ -92,6 +119,7 @@ def download_site(site):
     Downloads given site.
     :param str site: Web site url
     :return: Html String
+    :rtype Dict[str, str]
     """
     chrome_options = Options()
     chrome_options.add_argument("--headless")
@@ -100,7 +128,12 @@ def download_site(site):
     chrome_driver = os.path.abspath('chromedriver')
     driver = webdriver.Chrome(chrome_options=chrome_options, executable_path=chrome_driver)
     driver.get(site)
-    return driver.page_source
+    data = {
+        'site': site,
+        'html': driver.page_source
+    }
+    driver.close()
+    return data
 
 
 def extract_emails(html):
@@ -182,20 +215,82 @@ def process_site(site_url):
     pages.extend(contact_urls)
 
 
-def main(city, keyword, start_page=1, end_page=20):
+def download_search_result_pages(city, keyword, start_page, end_page):
+    """
+    Makes google search for given search term and collects all search results.
+
+    :param str city: Search city
+    :param str keyword: Search term
+    :param int start_page:
+    :param int end_page:
+    :rtype: List[SearchResult]
+    """
+    search_results: List[SearchResult] = []
+    pool = ThreadPool(processes=10)
+
+    threads = []
+
+    for page_number in range(start_page, end_page + 1):
+        thread = pool.apply_async(google_search, (city, keyword, page_number))
+        threads.append(thread)
+
+    for thread in threads:
+        result = thread.get(timeout=10)
+        search_results.append(result)
+
+    return search_results
+
+
+def download_site_pages(site_url):
+    """
+    Generates given site sub pages and download html sources.
+    :param site_url: Site URL
+    :return Html sources of site pages
+    :rtype: List[Dict[str, str]]
     """
 
-    :param city: Search city
-    :param keyword: Search keyword
-    :return:
+    pages = [site_url]
+    pages.extend(generate_contact_urls(site_url))
+
+    pool = ThreadPool(processes=10)
+    threads = []
+
+    html_sources: List[str] = []
+
+    for page in pages:
+        thread = pool.apply_async(download_site, (page,))
+        threads.append(thread)
+
+    for thread in threads:
+        result = thread.get()
+        html_sources.append(result)
+
+    return html_sources
+
+
+def main(keywords, cities, start_page, end_page):
+    """
+    :param List[str] keywords:
+    :param List[str} cities:
+    :param int start_page:
+    :param int end_page:
     """
 
-    web_site_links = []
+    all_search_results = []
 
-    for i in range(start_page, end_page):
-        result = google_search(city, keyword, i)
-        if result.get('link_count') > 0:
-            web_site_links.extend(result.get('verified_links'))
+    for keyword in keywords:
+        for city in cities:
+            search_results = download_search_result_pages(city=city, keyword=keyword, start_page=start_page,
+                                                          end_page=end_page)
+            all_search_results.extend(search_results)
 
-    for site in web_site_links:
-        process_site(site)
+    downladed_sites = []
+
+    all_sources = []
+
+    for search_result in all_search_results:
+        for page in search_result.links:
+            if page not in downladed_sites:
+                sources = download_site_pages(page)
+                all_sources.extend(sources)
+    return all_sources
