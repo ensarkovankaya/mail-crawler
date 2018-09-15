@@ -36,7 +36,8 @@ def parse_html(html):
 
 class SearchResult:
 
-    def __init__(self, city, keyword, search_term, page_number, links, status_code):
+    def __init__(self, city, keyword, search_term, page_number, links,
+                 status_code):
         self.city = city
         self.keyword = keyword
         self.search_term = search_term
@@ -80,7 +81,8 @@ def google_search(city, keyword, page_number):
     :rtype: SearchResult
     """
 
-    logger.info(f"Searching from google with Key: {keyword} City: {city} and Page: {page_number}")
+    logger.info(
+        f"Searching from google with Key: {keyword} City: {city} and Page: {page_number}")
 
     search_term = "{0} in {1}".format(keyword, city)
     url = \
@@ -89,7 +91,8 @@ def google_search(city, keyword, page_number):
             page=page_number
         )
     response = requests.get(url)
-    logger.debug(f"Search result page successfully for search '{search_term}' in page {page_number}.")
+    logger.debug(
+        f"Search result page successfully for search '{search_term}' in page {page_number}.")
 
     if response.status_code == 200:
         # If page response successful
@@ -105,13 +108,17 @@ def google_search(city, keyword, page_number):
         for link in raw_links:
             links.append(clean_site_url(link.replace('/url?q=', '')))
 
-        logger.info(f"Links extracted for search {search_term}, Page: {page_number}.")
+        logger.info(
+            f"Links extracted for search {search_term}, Page: {page_number}.")
 
-        return SearchResult(city=city, keyword=keyword, search_term=search_term, page_number=page_number,
+        return SearchResult(city=city, keyword=keyword, search_term=search_term,
+                            page_number=page_number,
                             links=links, status_code=response.status_code)
     else:
-        logger.error("Links can not extracted for search {}.".format(search_term))
-        return SearchResult(city=city, keyword=keyword, search_term=search_term, page_number=page_number,
+        logger.error(
+            "Links can not extracted for search {}.".format(search_term))
+        return SearchResult(city=city, keyword=keyword, search_term=search_term,
+                            page_number=page_number,
                             links=[], status_code=response.status_code)
 
 
@@ -137,7 +144,8 @@ def download_page(url):
         chrome_options.add_argument("--window-size=1920x1080")
 
         chrome_driver = os.path.abspath('chromedriver')
-        driver = webdriver.Chrome(chrome_options=chrome_options, executable_path=chrome_driver)
+        driver = webdriver.Chrome(chrome_options=chrome_options,
+                                  executable_path=chrome_driver)
         driver.get(url)
         data['html'] = driver.page_source
         data['successful'] = True
@@ -256,8 +264,14 @@ def download_search_result_pages(city, keyword, start_page, end_page):
         threads.append(thread)
 
     for thread in threads:
-        result = thread.get(timeout=10)
-        search_results.append(result)
+        try:
+            result = thread.get()
+            search_results.append(result)
+        except Exception:
+            logger.exception(
+                f"Download search result pages failed. City: "
+                f"{city}, Keyword: {keyword}, Start: {start_page}, End: {end_page}"
+            )
 
     return search_results
 
@@ -284,8 +298,11 @@ def download_pages(pages):
         threads.append(thread)
 
     for thread in threads:
-        result = thread.get()
-        html_sources.append(result)
+        try:
+            result = thread.get()
+            html_sources.append(result)
+        except Exception:
+            logger.exception(f"Downloading pages failed!")
 
     return html_sources
 
@@ -300,7 +317,8 @@ def check_url_exists(url, path='', current=0, max_redirect=5):
     :returns: dict
     """
 
-    logger.debug(f"Checking url {url} with path: {path}. Max: {max_redirect}, Current: {current}")
+    logger.debug(
+        f"Checking url {url} with path: {path}. Max: {max_redirect}, Current: {current}")
 
     if current > max_redirect:
         logger.warning(f"Max redirect reached for {url}")
@@ -349,7 +367,10 @@ def get_exist_pages(urls):
         threads.append(thread)
 
     for thread in threads:
-        results.append(thread.get(timeout=10))
+        try:
+            results.append(thread.get())
+        except Exception:
+            logger.exception(f"Geting existing pages failed!")
 
     exists = []
 
@@ -366,13 +387,15 @@ def download_site_pages(site_url):
     sub_pages = generate_contact_urls(site_url)  # Generate sub pages
     logger.info(f"Sub pages generated for {site_url}")
     exist_pages = get_exist_pages(sub_pages)  # Filter exist pages
-    logger.info(f"Existing sub pages count for {site_url} is {len(exist_pages)}.")
+    logger.info(
+        f"Existing sub pages count for {site_url} is {len(exist_pages)}.")
 
     if site_url not in exist_pages:  # If site url not in exist pages add it
         exist_pages.append(site_url)
 
     # Download pages html source
-    page_sources = download_pages(exist_pages)  # [{url: ..., successful: ..., html: ...}]
+    page_sources = download_pages(
+        exist_pages)  # [{url: ..., successful: ..., html: ...}]
 
     logger.info(f"Downloaded site pages successfully: {site_url}")
     return {
@@ -394,7 +417,8 @@ def extract_emails_from_sources(site):
     logger.info(f"Extracting mails for: {site.get('site')}")
     for page in site.get('pages'):  # For every page in site pages
         if page.get('successful'):  # If page downloaded successfully
-            mails.extend(extract_emails(page.get('html')))  # Extract mails from page html
+            mails.extend(extract_emails(
+                page.get('html')))  # Extract mails from page html
 
     # After all pages extracted
     unique_mails = list(set(mails))  # Remove same mails from list
@@ -415,9 +439,12 @@ def process_search_result_site(url, keyword, city, search_term, page_number):
     :param int page_number: google result page number
     :return:
     """
-    logger.info(f"Processing page {url}. Keyword: {keyword}, City: {city}, Page: {page_number}")
-    sources = download_site_pages(url)  # {site: ..., pages: [{url: ..., successful: ..., html: ...}]}
-    mail_result = extract_emails_from_sources(sources)  # {site: ..., mails: ...., count: ...}
+    logger.info(
+        f"Processing page {url}. Keyword: {keyword}, City: {city}, Page: {page_number}")
+    sources = download_site_pages(
+        url)  # {site: ..., pages: [{url: ..., successful: ..., html: ...}]}
+    mail_result = extract_emails_from_sources(
+        sources)  # {site: ..., mails: ...., count: ...}
     return {
         'site': url,
         'keyword': keyword,
@@ -429,6 +456,39 @@ def process_search_result_site(url, keyword, city, search_term, page_number):
     }
 
 
+def process_search_result(search_result):
+    """
+    Process one search result.
+    :param SearchResult search_result: Site pages
+    :return: Dict[str, str]
+            result['exists'] -- boolean
+            result['url']
+    """
+    pool = ThreadPool(processes=10)
+
+    threads = []
+    results = []
+
+    for link in search_result.links:
+        thread = pool.apply_async(process_search_result_site, kwds={
+            'url': link,
+            'keyword': search_result.keyword,
+            'city': search_result.city,
+            'search_term': search_result.search_term,
+            'page_number': search_result.page_number
+        })
+        threads.append(thread)
+
+    for thread in threads:
+        try:
+            results.append(thread.get())
+        except Exception:
+            logger.exception(
+                f"Process search result failed for '{search_result.search_term}' page {search_result.page_number}")
+
+    return results
+
+
 def main(keywords, cities, start_page, end_page):
     """
     :param List[str] keywords:
@@ -437,30 +497,28 @@ def main(keywords, cities, start_page, end_page):
     :param int end_page:
     """
 
-    all_search_results = []  # Store all search results
+    search_results = []  # Store all search results
 
     for keyword in keywords:  # For every keyword
         for city in cities:  # For every city
             # Collect search results from city-keyword pair
-            search_results = download_search_result_pages(city=city, keyword=keyword, start_page=start_page,
-                                                          end_page=end_page)
-            all_search_results.extend(search_results)  # Extends to all search results
-
-    downloaded_sites = []
+            search_results.extend(download_search_result_pages(city=city,
+                                                               keyword=keyword,
+                                                               start_page=start_page,
+                                                               end_page=end_page
+                                                               ))  # Extends to all search results
 
     results = []  # [{site: .., keyword: ..., city: ..., page_number: ..., search_term: ...}]
 
-    for search_result in all_search_results:  # For every google search result
-        for site_url in search_result.links:  # For every site url in search result
-            if site_url not in downloaded_sites:
-                results.append(process_search_result_site(
-                    url=site_url,
-                    keyword=search_result.keyword,
-                    city=search_result.city,
-                    search_term=search_result.search_term,
-                    page_number=search_result.page_number
-                ))
-                downloaded_sites.append(site_url)
+    # Remove duplicated sites other search result pages
+    for index, search_result in enumerate(search_results):
+        for other_result in search_results[index:]:
+            for site in search_result.links:
+                if other_result.is_link_exists(site):
+                    other_result.remove_link(site)
+
+    for search_result in search_results:  # For every google search result
+        results.extend(process_search_result(search_result))
 
     return results
 
