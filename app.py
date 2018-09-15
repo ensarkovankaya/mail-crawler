@@ -11,7 +11,7 @@ import re
 from urllib.parse import urlparse
 from multiprocessing.pool import ThreadPool
 
-logging.basicConfig(level='DEBUG')
+logging.basicConfig(level='INFO')
 
 logger = logging.getLogger('app')
 
@@ -36,11 +36,11 @@ def parse_html(html):
 
 class SearchResult:
 
-    def __init__(self, city, keyword, search_term, page, links, status_code):
+    def __init__(self, city, keyword, search_term, page_number, links, status_code):
         self.city = city
         self.keyword = keyword
         self.search_term = search_term
-        self.page = page
+        self.page_number = page_number
         self.status_code = status_code
         self.links = list(set(links))
         self.count = len(self.links)
@@ -80,7 +80,7 @@ def google_search(city, keyword, page_number):
     :rtype: SearchResult
     """
 
-    logger.debug("Searching from google with Key: {} City: {} and Page: {}".format(keyword, city, page_number))
+    logger.info(f"Searching from google with Key: {keyword} City: {city} and Page: {page_number}")
 
     search_term = "{0} in {1}".format(keyword, city)
     url = \
@@ -105,29 +105,31 @@ def google_search(city, keyword, page_number):
         for link in raw_links:
             links.append(clean_site_url(link.replace('/url?q=', '')))
 
-        logger.info("Links extracted for search {}.".format(search_term))
+        logger.info(f"Links extracted for search {search_term}, Page: {page_number}.")
 
-        return SearchResult(city=city, keyword=keyword, search_term=search_term, page=page_number,
+        return SearchResult(city=city, keyword=keyword, search_term=search_term, page_number=page_number,
                             links=links, status_code=response.status_code)
     else:
         logger.error("Links can not extracted for search {}.".format(search_term))
-        return SearchResult(city=city, keyword=keyword, search_term=search_term, page=page_number,
+        return SearchResult(city=city, keyword=keyword, search_term=search_term, page_number=page_number,
                             links=[], status_code=response.status_code)
 
 
-def download_site(site):
+def download_page(url):
     """
     Downloads given site.
-    :param str site: Web site url
+    :param str url: Web site url
     :return: Html String
     :rtype Dict[str, str]
     """
 
     data = {
-        'site': site,
+        'url': url,
         'html': None,
         'successful': False
     }
+
+    logger.info(f"Downloading page: {url}")
 
     try:
         chrome_options = Options()
@@ -136,12 +138,12 @@ def download_site(site):
 
         chrome_driver = os.path.abspath('chromedriver')
         driver = webdriver.Chrome(chrome_options=chrome_options, executable_path=chrome_driver)
-        driver.get(site)
+        driver.get(url)
         data['html'] = driver.page_source
         data['successful'] = True
         driver.close()
     except TimeoutException:
-        pass
+        logger.warning(f"Timeout for downloading page: {url}")
     except:
         raise
 
@@ -156,7 +158,12 @@ def extract_emails(html):
     :return: List[str] Unique list of mails.
     """
 
-    return list(set(re.findall('[\w\.-]+@[\w\.-]+\.[\w\.-]+', html)))
+    mails = []
+    result = list(set(re.findall('[\w\.-]+@[\w\.-]+\.[\w\.-]+', html)))
+    for mail in result:  # Clear image links
+        if not (mail.endswith('png') or mail.endswith('jpg')):
+            mails.append(mail)
+    return mails
 
 
 def find_domain_mails(domain, mails):
@@ -194,12 +201,14 @@ def generate_contact_urls(site):
         "aboutus",
         "about-us",
         "about.html",
-        "about.php"
+        "about.php",
+        "support"
     ]
 
     links = []
     for ptr in patterns:
-        url = "{site}/{pattern}".format(site=site, pattern=ptr)
+        url = site
+        url += ptr if url.endswith('/') else f"/{ptr}"
         links.append(url)
     return links
 
@@ -253,24 +262,25 @@ def download_search_result_pages(city, keyword, start_page, end_page):
     return search_results
 
 
-def download_site_pages(site_url):
+def download_pages(pages):
     """
-    Generates given site sub pages and download html sources.
-    :param site_url: Site URL
+    Download html sources for given pages.
+    :param pages: List of site pages
     :return Html sources of site pages
     :rtype: List[Dict[str, str]]
     """
 
-    pages = [site_url]
-    pages.extend(generate_contact_urls(site_url))
+    if len(pages) == 0:
+        return []
 
     pool = ThreadPool(processes=10)
     threads = []
 
     html_sources: List[str] = []
 
+    logger.debug(f"Downloading {len(pages)} pages. [{pages[0][:10]}, ...]")
     for page in pages:
-        thread = pool.apply_async(download_site, (page,))
+        thread = pool.apply_async(download_page, (page,))
         threads.append(thread)
 
     for thread in threads:
@@ -278,6 +288,145 @@ def download_site_pages(site_url):
         html_sources.append(result)
 
     return html_sources
+
+
+def check_url_exists(url, path='', current=0, max_redirect=5):
+    """
+    Checks given url page exists
+    :param str url:
+    :param str path: Current path
+    :param int max_redirect: Maximum redirect cycle
+    :param int current: Current redirect cyle
+    :returns: dict
+    """
+
+    logger.debug(f"Checking url {url} with path: {path}. Max: {max_redirect}, Current: {current}")
+
+    if current > max_redirect:
+        logger.warning(f"Max redirect reached for {url}")
+        return {'url': url, 'exists': False}
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_6) '
+                      'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2840.98 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    }
+
+    try:
+        response = requests.head(url + path, headers=headers)
+        logger.debug(f"Url checked. Status: {response.status_code}, URL: {url}")
+    except:
+        logger.warning(f"URL could not checked.")
+        return {'url': url, 'exists': False}
+
+    # If page redirects follow the link
+    if response.status_code == 302:
+        return check_url_exists(url=url, path=response.headers.get('Location'),
+                                max_redirect=max_redirect, current=current + 1)
+
+    # Page moved
+    if response.status_code == 301:
+        return check_url_exists(url=response.headers.get('Location'),
+                                max_redirect=max_redirect, current=current + 1)
+    return {'url': url, 'exists': response.status_code == 200}
+
+
+def get_exist_pages(urls):
+    """
+
+    :param List[str] urls: Site pages
+    :return: Dict[str, str]
+            result['exists'] -- boolean
+            result['url']
+    """
+    pool = ThreadPool(processes=10)
+
+    threads = []
+    results = []
+
+    for url in urls:
+        thread = pool.apply_async(check_url_exists, (url,))
+        threads.append(thread)
+
+    for thread in threads:
+        results.append(thread.get(timeout=10))
+
+    exists = []
+
+    # Filter only exists ones
+    for result in results:  # [{url: .., exists: ...}, {}]
+        if result.get('exists'):
+            exists.append(result.get('url'))
+    return list(set(exists))
+
+
+def download_site_pages(site_url):
+    logger.info(f"Downloading pages for: {site_url}")
+
+    sub_pages = generate_contact_urls(site_url)  # Generate sub pages
+    logger.info(f"Sub pages generated for {site_url}")
+    exist_pages = get_exist_pages(sub_pages)  # Filter exist pages
+    logger.info(f"Existing sub pages count for {site_url} is {len(exist_pages)}.")
+
+    if site_url not in exist_pages:  # If site url not in exist pages add it
+        exist_pages.append(site_url)
+
+    # Download pages html source
+    page_sources = download_pages(exist_pages)  # [{url: ..., successful: ..., html: ...}]
+
+    logger.info(f"Downloaded site pages successfully: {site_url}")
+    return {
+        'site': site_url,
+        'pages': page_sources
+    }
+
+
+def extract_emails_from_sources(site):
+    """
+
+    :param site: Dict
+        site['site']: str
+        site['pages']: List[{url: ..., successful: ..., html: ...}]
+    :return:
+    """
+
+    mails = []
+    logger.info(f"Extracting mails for: {site.get('site')}")
+    for page in site.get('pages'):  # For every page in site pages
+        if page.get('successful'):  # If page downloaded successfully
+            mails.extend(extract_emails(page.get('html')))  # Extract mails from page html
+
+    # After all pages extracted
+    unique_mails = list(set(mails))  # Remove same mails from list
+    return {
+        'site': site.get('site'),
+        'mails': unique_mails,
+        'count': len(unique_mails)
+    }
+
+
+def process_search_result_site(url, keyword, city, search_term, page_number):
+    """
+    Process one site, generated sub pages and extract mails
+    :param str url: Site url
+    :param str keyword: search keyword
+    :param str city: search city
+    :param str search_term: search term
+    :param int page_number: google result page number
+    :return:
+    """
+    logger.info(f"Processing page {url}. Keyword: {keyword}, City: {city}, Page: {page_number}")
+    sources = download_site_pages(url)  # {site: ..., pages: [{url: ..., successful: ..., html: ...}]}
+    mail_result = extract_emails_from_sources(sources)  # {site: ..., mails: ...., count: ...}
+    return {
+        'site': url,
+        'keyword': keyword,
+        'city': city,
+        'search_term': search_term,
+        'page_number': page_number,
+        'mails': mail_result.get('mails'),
+        'mail_count': mail_result.get('count')
+    }
 
 
 def main(keywords, cities, start_page, end_page):
@@ -288,21 +437,33 @@ def main(keywords, cities, start_page, end_page):
     :param int end_page:
     """
 
-    all_search_results = []
+    all_search_results = []  # Store all search results
 
-    for keyword in keywords:
-        for city in cities:
+    for keyword in keywords:  # For every keyword
+        for city in cities:  # For every city
+            # Collect search results from city-keyword pair
             search_results = download_search_result_pages(city=city, keyword=keyword, start_page=start_page,
                                                           end_page=end_page)
-            all_search_results.extend(search_results)
+            all_search_results.extend(search_results)  # Extends to all search results
 
-    downladed_sites = []
+    downloaded_sites = []
 
-    all_sources = []
+    results = []  # [{site: .., keyword: ..., city: ..., page_number: ..., search_term: ...}]
 
-    for search_result in all_search_results:
-        for page in search_result.links:
-            if page not in downladed_sites:
-                sources = download_site_pages(page)
-                all_sources.extend(sources)
-    return all_sources
+    for search_result in all_search_results:  # For every google search result
+        for site_url in search_result.links:  # For every site url in search result
+            if site_url not in downloaded_sites:
+                results.append(process_search_result_site(
+                    url=site_url,
+                    keyword=search_result.keyword,
+                    city=search_result.city,
+                    search_term=search_result.search_term,
+                    page_number=search_result.page_number
+                ))
+                downloaded_sites.append(site_url)
+
+    return results
+
+
+if __name__ == '__main__':
+    main(keywords=['Dentist'], cities=['New York'], start_page=6, end_page=7)
